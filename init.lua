@@ -1,6 +1,6 @@
 -- thank you https://boltless.me/posts/neovim-config-without-plugins-2025/ !!!
-
-vim.cmd.colorscheme('habamax')
+-- nmap <silent> * "syiw<Esc>: let @/ = @s<CR>
+vim.cmd.colorscheme('default')
 vim.cmd.tnoremap('<Esc>', '<C-\\><C-n>')
 vim.cmd.set('relativenumber')
 vim.cmd.set('number')
@@ -21,12 +21,10 @@ vim.o.expandtab = true -- Pressing the TAB key will insert spaces instead of a T
 vim.o.softtabstop = 4  -- Number of spaces inserted instead of a TAB character
 vim.o.shiftwidth = 4   -- Number of spaces inserted when indenting
 
-
-
 if vim.g.neovide then
     vim.cmd.tnoremap('<C-[>', '<C-\\><C-n>')
-    local scale_factors = {1.6, 1.55, 1.3, 0.95 --[[not 1 because neovide won't fill in the last column otherwise]], 0.8, 0.4}
-    local scale_factor_idx = 4
+    local scale_factors = {2.1, 1.8, 1.6, 1.55, 1.3, 0.95 --[[not 1 because neovide won't fill in the last column otherwise]], 0.8, 0.4}
+    local scale_factor_idx = 6
 
     vim.g.neovide_cursor_antialiasing = false
     vim.g.neovide_scale_factor = scale_factors[scale_factor_idx]
@@ -131,14 +129,14 @@ require('lazy').setup({
         ---@module 'oil'
         ---@type oil.SetupOpts
         opts = {
-            default_file_explorer = false,
+            default_file_explorer = true,
             columns = {
                 "permissions",
                 "size",
                 "mtime",
             },
             delete_to_trash = true,
-            watch_for_cahnges = true,
+            watch_for_changes = true,
             view_options = {
                 show_hidden = true
             },
@@ -156,16 +154,84 @@ require('lazy').setup({
 --     snippet = { expand = function(args) vim.snippet.expand(args.body) end }
 -- })
 
-vim.diagnostic.config({ virtual_text = true })
+vim.api.nvim_create_user_command('Config', function(_)
+    -- vim.diagnostic.set(0, 0, vim.lsp.diagnostic.get(), { virtual_text = false })
+    vim.cmd.edit('~/.config/nvim/init.lua');
+end, {})
 
-vim.api.nvim_create_autocmd('LspAttach', {
-  callback = function(ev)
-    local client = vim.lsp.get_client_by_id(ev.data.client_id)
-    if client:supports_method('textDocument/completion') then
-      vim.lsp.completion.enable(true, client.id, ev.buf, { autotrigger = false })
+local vitrual_text_enabled = true
+vim.diagnostic.config({ virtual_text = vitrual_text_enabled })
+vim.api.nvim_create_user_command('LspToggleVirtualText', function(ev)
+    -- vim.diagnostic.set(0, 0, vim.lsp.diagnostic.get(), { virtual_text = false })
+    -- vim.lsp.
+    local client_buffers = vim.lsp.get_clients({bufnr = 0})
+    -- vim.diagnostic.config()
+    vitrual_text_enabled = not vitrual_text_enabled
+    vim.diagnostic.config({ virtual_text = vitrual_text_enabled })
+end, {})
+
+vim.api.nvim_create_user_command('LspStopSemanticTokens', function(ev)
+    local clients = vim.lsp.get_clients({bufnr = 0})
+    for _, c in pairs(clients) do
+        vim.lsp.semantic_tokens.stop(0, c.id)
     end
-  end,
-})
+end, {})
+
+vim.api.nvim_create_user_command('LspStartSemanticTokens', function(ev)
+    local clients = vim.lsp.get_clients({bufnr = 0})
+    for _, c in pairs(clients) do
+        vim.lsp.semantic_tokens.start(0, c.id)
+    end
+end, {})
+
+-- buffer-local keymaps to be set only if an lsp client is attached to the
+-- buffer. See autocomands.
+do
+    local lspkeymaps = {
+        { mode = 'n', lhs = 'gl', rhs = vim.diagnostic.open_float },
+        { mode = 'n', lhs = 'gd', rhs = vim.lsp.buf.definition },
+        { mode = 'n', lhs = 'gD', rhs = vim.lsp.buf.declaration },
+        { mode = 'n', lhs = 'gs', rhs = vim.lsp.buf.signature_help },
+        { mode = 'n', lhs = 'go', rhs = vim.lsp.buf.type_definition },
+    }
+
+    vim.api.nvim_create_autocmd('LspAttach', {
+        callback = function(ev)
+            local client = vim.lsp.get_client_by_id(ev.data.client_id)
+            if client ~= nil then
+                -- see 'how to get human right in neovim'
+                if client:supports_method('textDocument/completion') then
+                    vim.lsp.completion.enable(
+                        true,
+                        client.id,
+                        ev.buf,
+                        { autotrigger = false }
+                    )
+                end
+                -- set buffer local mappings
+                for _, m in ipairs(lspkeymaps) do
+                    vim.keymap.set(m.mode, m.lhs, m.rhs, {buffer = ev.buf})
+                end
+            end
+        end,
+    })
+
+    vim.api.nvim_create_autocmd('LspDetach', {
+        callback = function(ev)
+            local lsp_clients = vim.lsp.get_clients({bufnr = 0})
+            -- LspDetach is emitted just before the lsp client is detached from the
+            -- buffer. That means if there is only one client attached to the
+            -- buffer, than that's the client that is about to be detached.
+            if #lsp_clients == 1 then
+                -- delete lsp specific keymaps, should the last lsp client be
+                -- detached from the buffer
+                for _, m in ipairs(lspkeymaps) do
+                    vim.keymap.del(m.mode, m.lhs, {buffer = ev.buf})
+                end
+            end
+        end,
+    })
+end
 
 -- thank you https://boltless.me/posts/neovim-config-without-plugins-2025/
 
@@ -173,156 +239,104 @@ vim.api.nvim_create_autocmd('LspAttach', {
 
 -- # Langauge Servers
 
--- I am keeping a 'personal' record of all my lsp configs so that i can iterate
--- over them for my user command :LspStart. vim.lsp.config allows access to
--- individual configs via the subscript operator but does not allow iterating
--- via iparis.
-local my_lsps = {}
-local function vim_lsp_config(name, config)
-    vim.lsp.config(name, config)
-    table.insert(my_lsps, name)
-    -- my_lsp_config_record[name] = true--vim.lsp.config[name]
+do
+    -- I am keeping a 'personal' record of all my lsp configs so that i can iterate
+    -- over them for my user command :LspStart. vim.lsp.config allows access to
+    -- individual configs via the subscript operator but does not allow iterating
+    -- via iparis.
+    local my_lsps = {}
+    local function vim_lsp_config(name, config)
+        vim.lsp.config(name, config)
+        table.insert(my_lsps, name)
+        -- my_lsp_config_record[name] = true--vim.lsp.config[name]
+    end
+
+    -- this lua lsp config was taken from somewhere else but i modified it heavily.
+    -- The comments aren't mine though.
+    vim_lsp_config('lua_ls', {
+        cmd = { "lua-language-server" },
+        root_markers = { ".luarc.json", ".luarc.jsonc" },
+        filetypes = { 'lua' },
+        settings = {
+            Lua = {
+                runtime = {
+                    -- Tell the language server which version of Lua you're using
+                    -- (most likely LuaJIT in the case of Neovim)
+                    version = 'LuaJIT'
+                },
+                -- Make the server aware of Neovim runtime files
+                workspace = {
+                    checkThirdParty = false,
+                    library = {
+                        vim.env.VIMRUNTIME
+                        -- Depending on the usage, you might want to add additional paths here.
+                        -- "${3rd}/luv/library"
+                        -- "${3rd}/busted/library",
+                    }
+                    -- or pull in all of 'runtimepath'. NOTE: this is a lot slower
+                    -- library = vim.api.nvim_get_runtime_file("", true)
+                }
+            }
+        }
+    })
+    vim.lsp.enable('lua_ls')
+
+    vim_lsp_config('clangd', {
+        cmd = { 'clangd' }, -- --completion-style=detailed
+        root_markers = { ".clangd", "compile_commands.json" },
+        filetypes = { 'c', 'cpp', 'cxx' },
+    })
+    vim.lsp.enable('clangd')
+
+    vim_lsp_config('rust-analyzer', {
+        cmd = { 'rust-analyzer' },
+        root_markers = { "Cargo.toml", "Cargo.lock" },
+        filetypes = { 'rust', 'rs' },
+    })
+    vim.lsp.enable('rust-analyzer')
+
+    vim_lsp_config('ols', {
+        cmd = { 'ols' },
+        filetypes = { 'odin' },
+        init_options = {
+            enable_semantic_tokens = true,
+            checker_args = "-vet-unused",
+        },
+        root_dir = function(buffer_nr, callback)
+            -- ols will send an error on buffers that don't have an acutal file so
+            -- don't call the callbakc when the file has no name (or path)
+            if #vim.api.nvim_buf_get_name(buffer_nr) > 0 then
+                callback('.')
+            end
+        end,
+    })
+    vim.lsp.enable('ols')
+
+    vim_lsp_config('pylsp', {
+        cmd = { 'pylsp' },
+        filetypes = { 'py' },
+        settings = { pylsp = { plugins = { pylint = { enabled = true } } } }
+    })
+    vim.lsp.enable('pylsp')
+
+    vim_lsp_config('tinymist', {
+        cmd = { 'tinymist' },
+        filetypes = { 'typst' },
+    })
+    vim.lsp.enable('tinymist')
+
+    vim_lsp_config('zls', {
+        cmd = { 'zls' },
+        filetypes = { 'zig' },
+    })
+    vim.lsp.enable('zls')
 end
 
-vim_lsp_config('lua_ls', {
-    cmd = { "lua-language-server" },
-    root_markers = { ".luarc.json", ".luarc.jsonc" },
-    filetypes = { 'lua' },
-    settings = {
-        runtime = {
-            -- Tell the language server which version of Lua you're using
-            -- (most likely LuaJIT in the case of Neovim)
-            version = 'LuaJIT'
-        },
-        -- Make the server aware of Neovim runtime files
-        workspace = {
-            checkThirdParty = false,
-            library = {
-                vim.env.VIMRUNTIME
-                -- Depending on the usage, you might want to add additional paths here.
-                -- "${3rd}/luv/library"
-                -- "${3rd}/busted/library",
-            }
-            -- or pull in all of 'runtimepath'. NOTE: this is a lot slower
-            -- library = vim.api.nvim_get_runtime_file("", true)
-        }
-    }
-})
-vim.lsp.enable('lua_ls')
-
-vim_lsp_config('clangd', {
-    cmd = { 'clangd' }, -- --completion-style=detailed
-    root_markers = { ".clangd", "compile_commands.json" },
-    filetypes = { 'c', 'cpp', 'cxx' },
-})
-vim.lsp.enable('clangd')
-
-vim_lsp_config('rust-analyzer', {
-    cmd = { 'rust-analyzer' },
-    root_markers = { "Cargo.toml", "Cargo.lock" },
-    filetypes = { 'rust', 'rs' },
-})
-vim.lsp.enable('rust-analyzer')
-
-vim_lsp_config('ols', {
-    cmd = { 'ols' },
-    filetypes = { 'odin' },
-    root_markers = { "ols.json", ".git", "*.odin" },
-    settings = { checker_args = "-vet-unused" },
-})
-vim.lsp.enable('ols')
-
-vim_lsp_config('pylsp', {
-    cmd = { 'pylsp' },
-    filetypes = { 'py' },
-    settings = { pylsp = { plugins = { pylint = { enabled = true } } } }
-})
-vim.lsp.enable('pylsp')
-
-vim_lsp_config('tinymist', {
-    cmd = { 'tinymist' },
-    filetypes = { 'typst' },
-})
-vim.lsp.enable('tinymist')
-
-
--- local lsp_zero = require("lsp-zero")
--- lsp_zero.setup_servers({
---     'zls',
---     'clangd',
---     'rust_analyzer',
---     -- 'marksman',
---     'pylsp',
---     -- 'lua_ls',
---     'texlab',
---     'jdtls',
---     'cmake',
---     'ols',
--- })
-
-vim.keymap.set('n', 'gl', vim.diagnostic.open_float)
-vim.keymap.set('n', 'gd', vim.lsp.buf.definition)
-vim.keymap.set('n', 'gD', vim.lsp.buf.declaration)
-vim.keymap.set('n', 'gs', vim.lsp.buf.signature_help)
-vim.keymap.set('n', 'go', vim.lsp.buf.type_definition)
-
-
--- require('nvim-treesitter.configs').setup {
---     -- A list of parser names, or "all" (the listed parsers MUST always be installed)
---     -- ensure_installed = { "c", "lua", "vim", "vimdoc", "query", "markdown", "markdown_inline" },
---     ensure_installed = { "c", "lua", "rust", "markdown", "markdown_inline" },
---
---     -- Install parsers synchronously (only applied to `ensure_installed`)
---     sync_install = false,
---
---     -- Automatically install missing parsers when entering buffer
---     -- Recommendation: set to false if you don't have `tree-sitter` CLI installed locally
---     auto_install = false,
---
---     -- List of parsers to ignore installing (or "all")
---     ignore_install = { "latex" },
---
---     ---- If you need to change the installation directory of the parsers (see -> Advanced Setup)
---     -- parser_install_dir = "/some/path/to/store/parsers", -- Remember to run vim.opt.runtimepath:append("/some/path/to/store/parsers")!
---
---     highlight = {
---         enable = true,
---         disable = { "latex" },
---     },
--- }
---
-
--- require('lspconfig').lua_ls.setup {
---     on_init = function(client)
---         local path = client.workspace_folders[1].name
---         if vim.loop.fs_stat(path .. '/.luarc.json') or vim.loop.fs_stat(path .. '/.luarc.jsonc') then
---             return
---         end
---         client.config.settings.Lua = vim.tbl_deep_extend('force', client.config.settings.Lua, {
---             runtime = {
---                 -- Tell the language server which version of Lua you're using
---                 -- (most likely LuaJIT in the case of Neovim)
---                 version = 'LuaJIT'
---             },
---             -- Make the server aware of Neovim runtime files
---             workspace = {
---                 checkThirdParty = false,
---                 library = {
---                     vim.env.VIMRUNTIME
---                     -- Depending on the usage, you might want to add additional paths here.
---                     -- "${3rd}/luv/library"
---                     -- "${3rd}/busted/library",
---                 }
---                 -- or pull in all of 'runtimepath'. NOTE: this is a lot slower
---                 -- library = vim.api.nvim_get_runtime_file("", true)
---             }
---         })
---     end,
---     settings = {
---         Lua = {}
---     }
--- }
-
+require('telescope').setup{
+    defaults = {
+        layout_strategy = 'vertical',
+    },
+}
 
 -- setting up telescope
 local telescope_builtin = require("telescope.builtin")
@@ -378,7 +392,7 @@ vim.keymap.set('n', '<Space>o', function()
 end)
 
 vim.api.nvim_create_user_command('Format', function(args)
-    vim.cmd("LspZeroFormat")
+    vim.lsp.buf.format()
 end, {})
 
 vim.api.nvim_create_user_command('Cmd', function(_)
@@ -389,12 +403,16 @@ vim.api.nvim_create_user_command('BW', function()
     vim.cmd(":bn|:bd#")
 end, {})
 
-vim.api.nvim_create_user_command("LspStop", function(ops)
-    local clients = vim.lsp.get_clients({bufnr = vim.api.nvim_get_current_buf()})
+local function lspstop(filters)
+    local clients = vim.lsp.get_clients(filters)
     for _, c in ipairs(clients) do
         c:stop()
         print("stopped '"..c.name.."'")
     end
+end
+
+vim.api.nvim_create_user_command("LspStop", function(ops)
+    lspstop({bufnr = vim.api.nvim_get_current_buf()})
     -- vim.ui.select({
     --     prompt = 'Which LSP-Server do you want to stop',
     --     format_item = function(item)
@@ -403,6 +421,13 @@ vim.api.nvim_create_user_command("LspStop", function(ops)
 end, {
     nargs='*',
     desc='Stop the lsp-server(s) attached to the current buffer.'
+})
+
+vim.api.nvim_create_user_command("LspStopAll", function(ops)
+    lspstop({})
+end, {
+    nargs='*',
+    desc='Stop every lsp-server.'
 })
 
 vim.api.nvim_create_user_command("LspStart", function(ops)
@@ -439,7 +464,7 @@ end, {
     desc='Start the lsp-server(s) attached to the current buffer.'
 })
 
-vim.api.nvim_create_user_command("LspEnable", function(ops)
+vim.api.nvim_create_user_command("LspEnable", function(_)
     for _, lsp_name in pairs(my_lsps) do
         vim.lsp.enable(lsp_name, true)
     end
@@ -448,7 +473,7 @@ end, {
     desc='Enable all the configured lsp-servers.'
 })
 
-vim.api.nvim_create_user_command("LspDisable", function(ops)
+vim.api.nvim_create_user_command("LspDisable", function(_)
     for _, lsp_name in pairs(my_lsps) do
         vim.lsp.enable(lsp_name, false)
     end
@@ -457,7 +482,7 @@ end, {
     desc='Disable all the configured lsp-servers'
 })
 
-vim.api.nvim_create_user_command("PrintLspNames", function(ops)
+vim.api.nvim_create_user_command("PrintLspNames", function(_)
     local clients = vim.lsp.get_clients({bufnr = vim.api.nvim_get_current_buf()})
     if #clients == 0 then
         print("no clients")
@@ -478,42 +503,6 @@ end, {
     desc='Start the lsp-server(s) attached to the current buffer.'
 })
 
--- local function lsp_client_names(current)
---     local clients
---     if current then
---         clients = vim.lsp.get_clients({bufnr = vim.api.nvim_get_current_buf()})
---     else
---         clients = vim.lsp.get_clients()
---     end
---     local client_names = {}
---     for _, c in ipairs(clients) do
---         table.insert(client_names, c.name)
---     end
---     return client_names
--- end
-
--- -- TODO: Disable the lsp servers attached to the current buffer only when no
--- -- lsp server is specified (by name). Ohterwise disable the lsp-server that was
--- -- specified by name. Also support command completion by providing the names
--- -- of all the lsp-servers.
--- vim.api.nvim_create_user_command("LspDisable", function(ops)
---     if #ops.fargs == 0 then
---         -- local clients = vim.lsp.get_clients({bufnr = vim.api.nvim_get_current_buf()})
---         local current_client_names = lsp_client_names(true)
---         vim.lsp.enable(current_client_names, false)
---     else
---         vim.lsp.enable(ops.fargs, false)
---     end
--- end, {
---     nargs='?',
---     desc='Disable lsp-server(s) attached to the current buffer.',
---     complete=function(_, _, _)
---         return lsp_client_names(false)
---     end
--- })
-
-
-
 vim.api.nvim_create_user_command('TreesitterStop', function()
     vim.treesitter.stop()
 end, {})
@@ -530,13 +519,17 @@ vim.api.nvim_create_user_command('PylintEnable', function()
     vim.lsp.config['pylsp'] = { settings = { pylsp = { plugins = { pylint = { enabled = true } } } } }
 end, {})
 
-vim.api.nvim_create_autocmd({ "BufEnter" }, {
+vim.api.nvim_create_autocmd({ "FileType" }, {
     pattern = { "*.tex" },
     command = "set ft=tex",
 })
-vim.api.nvim_create_autocmd({ "BufEnter" }, {
+vim.api.nvim_create_autocmd({ "FileType" }, {
     pattern = { "Cargo.lock" },
     command = "set ft=toml",
+})
+vim.api.nvim_create_autocmd('FileType', {
+    command = 'setl noexpandtab shiftwidth=0',
+    pattern = 'odin'
 })
 
 -- thank you kickstart
@@ -556,14 +549,8 @@ vim.api.nvim_create_autocmd("TextYankPost", {
 --     return "O<Escape>j"
 -- end, { expr = true })
 
--- -- # Setting up leap keybindings
--- -- require('leap').create_default_mappings()
--- vim.keymap.set({'n', 'x', 'o'}, 's',  '<Plug>(leap)')
--- vim.keymap.set({'n', 'x', 'o'}, '<leader>s', '<Plug>(leap-from-window)')
-
 vim.keymap.set({'n', 'x', 'o',}, '<leader>n', '<cmd>noh<cr>')
 vim.keymap.set({'n', 'x', 'o',}, '<leader>g', '<cmd>G log --graph --all --oneline --decorate<cr>')
-
 
 -- harpoon
 local harpoon = require("harpoon")
@@ -581,23 +568,27 @@ vim.keymap.set('n', '<Space>ha', function()
     print("Added "..list_item.." file to harpoon list")
 end)
 
-local recycle_terminal = require("recycle-terminal")
 vim.keymap.set('n', '<Space>t', function()
-    recycle_terminal.reuse_terminal()
+    local reuseable_terminal_buffer = vim.iter(vim.api.nvim_list_bufs())
+        :filter(vim.api.nvim_buf_is_loaded)
+        :find(function(buffer)
+            local buffername = vim.api.nvim_buf_get_name(buffer)
+            return vim.startswith(buffername, 'term://')
+        end)
+    -- open new terminal if there is no old terminal
+    if reuseable_terminal_buffer then
+        vim.api.nvim_win_set_buf(0, reuseable_terminal_buffer)
+    else
+        vim.cmd.term()
+    end
 end)
 
 vim.api.nvim_create_user_command("T", function(ops)
-    -- local args = ""
-    -- for _, a in ipairs(ops.fargs) do
-    --     args = args .. " " .. a
-    -- end
-    -- print(args)
-    -- vim.cmd("split | term " .. args)
     vim.cmd("split |  term "..ops.args)
 end, {
     nargs = "*",
     complete = "shellcmd",
-    desc = "create a throw away terminal with vertical split",
+    desc = "Create a throw away terminal with vertical split.",
 })
 
 vim.keymap.set("n", "<space>1", function() harpoon:list():select(1) end)
@@ -624,7 +615,7 @@ require("rose-pine").setup({
     styles = {
         bold = true,
         italic = true,
-        transparency = true,
+        transparency = false,
     },
 
     groups = {
@@ -682,9 +673,7 @@ require('kanagawa').setup({
     transparent = true,
 })
 
--- vim.cmd("colorscheme kanagawa-dragon")
 vim.cmd("colorscheme gruber-darker")
--- vim.cmd("colorscheme rose-pine")
 
 -- startup warning message
 local warning_messages = {
