@@ -235,20 +235,20 @@ end
 
 -- thank you https://boltless.me/posts/neovim-config-without-plugins-2025/
 
--- local compatibilities = require('cmp_nvim_lsp').default_capabilities()
-
 -- # Langauge Servers
-
 do
     -- I am keeping a 'personal' record of all my lsp configs so that i can iterate
     -- over them for my user command :LspStart. vim.lsp.config allows access to
     -- individual configs via the subscript operator but does not allow iterating
     -- via iparis.
-    local my_lsps = {}
+    ---@type string[]
+    local my_lsp_clients = {}
+
+    --- @param name string
+    --- @param config vim.lsp.Config
     local function vim_lsp_config(name, config)
         vim.lsp.config(name, config)
-        table.insert(my_lsps, name)
-        -- my_lsp_config_record[name] = true--vim.lsp.config[name]
+        table.insert(my_lsp_clients, name)
     end
 
     -- this lua lsp config was taken from somewhere else but i modified it heavily.
@@ -330,6 +330,129 @@ do
         filetypes = { 'zig' },
     })
     vim.lsp.enable('zls')
+
+    -- Report the names of all the configured clients for the use of completion
+    -- in user commands.
+    ---@return string[]
+    local function get_lsp_names(arglead, cmdline, cursorpos)
+        _ = arglead
+        _ = cmdline
+        _ = cursorpos
+        ---@type string[]
+        local ret = {}
+        for _, name in ipairs(my_lsp_clients) do
+            table.insert(ret, name)
+        end
+        return ret
+    end
+
+    local function lspstop(filters)
+        local clients = vim.lsp.get_clients(filters)
+        for _, c in ipairs(clients) do
+            c:stop()
+            print("stopped '"..c.name.."'")
+        end
+    end
+
+    vim.api.nvim_create_user_command("LspStop", function(_)
+        lspstop({bufnr = vim.api.nvim_get_current_buf()})
+    end, {
+        nargs='*',
+        desc='Stop the lsp-server(s) attached to the current buffer.'
+    })
+
+    vim.api.nvim_create_user_command("LspStopAll", function(_)
+        lspstop({})
+    end, {
+        nargs='*',
+        desc='Stop every lsp-server.'
+    })
+
+    vim.api.nvim_create_user_command("LspStart", function(_)
+        local function lsp_configs_by_file_type(file_type)
+            local configs = {}
+            for _, lsp_name in ipairs(my_lsp_clients) do
+                local c = vim.lsp.config[lsp_name]
+                if c.filetypes ~= nil then
+                    for _, cft in ipairs(c.filetypes) do
+                        if cft == file_type then
+                            table.insert(configs, c)
+                            break
+                        end
+                   end
+                else
+                    -- from :h vim.lsp.Config (with added emphasis):
+                    -- > • {filetypes}?     (`string[]`) Filetypes the client will attach to, if
+                    -- >                    activated by `vim.lsp.enable()`. If not provided,
+                    -- >                    then the client **will attach to all filetypes**.
+                    table.insert(configs, c)
+                end
+            end
+            return configs
+        end
+
+        -- local clients = vim.lsp.get_clients({bufnr = vim.api.nvim_get_current_buf()})
+        local configs = lsp_configs_by_file_type(vim.bo.filetype)
+        for _, c in ipairs(configs) do
+            vim.lsp.start(c)
+            print("starting '"..c.name.."'")
+        end
+    end, {
+        nargs='*',
+        desc='Start the lsp-server(s) attached to the current buffer.'
+    })
+
+    do
+        ---@param names string[]
+        ---@param enable boolean
+        local function enable_or_disable_lsp_clients(names, enable)
+            if #names == 0 then -- no names specified -> disable/enable all lsp clients
+                names = get_lsp_names()
+            end
+            for _, e in ipairs(names) do
+                vim.lsp.enable(e, enable)
+                print((enable and "enabled" or "disabled").." '"..e.."'")
+            end
+        end
+
+        vim.api.nvim_create_user_command("LspEnable", function(ops)
+            enable_or_disable_lsp_clients(ops.fargs, true)
+        end, {
+            complete=get_lsp_names,
+            nargs='*',
+            desc='Enable the configured lsp-servers.'
+        })
+
+        vim.api.nvim_create_user_command("LspDisable", function(ops)
+            enable_or_disable_lsp_clients(ops.fargs, false)
+        end, {
+            complete=get_lsp_names,
+            nargs='*',
+            desc='Disable the configured lsp-servers'
+        })
+    end
+
+    vim.api.nvim_create_user_command("PrintLspNames", function(_)
+        local clients = vim.lsp.get_clients({bufnr = vim.api.nvim_get_current_buf()})
+        if #clients == 0 then
+            print("no clients")
+        end
+        for _, c in ipairs(clients) do
+            print(c.name)
+            -- local c_config = vim.lsp.config[c.name]
+            -- if c_config ~= nil then
+            --     vim.lsp.start(c_config)
+            --     print("starting '"..c.name.."'")
+            -- else
+            --     print("could not find config for "..c.name)
+            -- end
+        end
+    end, {
+        nargs='*',
+        complete='shellcmd',
+        desc='Start the lsp-server(s) attached to the current buffer.'
+    })
+
 end
 
 require('telescope').setup{
@@ -403,105 +526,6 @@ vim.api.nvim_create_user_command('BW', function()
     vim.cmd(":bn|:bd#")
 end, {})
 
-local function lspstop(filters)
-    local clients = vim.lsp.get_clients(filters)
-    for _, c in ipairs(clients) do
-        c:stop()
-        print("stopped '"..c.name.."'")
-    end
-end
-
-vim.api.nvim_create_user_command("LspStop", function(ops)
-    lspstop({bufnr = vim.api.nvim_get_current_buf()})
-    -- vim.ui.select({
-    --     prompt = 'Which LSP-Server do you want to stop',
-    --     format_item = function(item)
-    --     end
-    -- })
-end, {
-    nargs='*',
-    desc='Stop the lsp-server(s) attached to the current buffer.'
-})
-
-vim.api.nvim_create_user_command("LspStopAll", function(ops)
-    lspstop({})
-end, {
-    nargs='*',
-    desc='Stop every lsp-server.'
-})
-
-vim.api.nvim_create_user_command("LspStart", function(ops)
-    local function lsp_configs_by_file_type(file_type)
-        local configs = {}
-        for _, lsp_name in ipairs(my_lsps) do
-            local c = vim.lsp.config[lsp_name]
-            if c.filetypes ~= nil then
-                for _, cft in ipairs(c.filetypes) do
-                    if cft == file_type then
-                        table.insert(configs, c)
-                        break
-                    end
-               end
-            else
-                -- from :h vim.lsp.Config (with added emphasis):
-                -- > • {filetypes}?     (`string[]`) Filetypes the client will attach to, if
-                -- >                    activated by `vim.lsp.enable()`. If not provided,
-                -- >                    then the client **will attach to all filetypes**.
-                table.insert(configs, c)
-            end
-        end
-        return configs
-    end
-
-    -- local clients = vim.lsp.get_clients({bufnr = vim.api.nvim_get_current_buf()})
-    local configs = lsp_configs_by_file_type(vim.bo.filetype)
-    for _, c in ipairs(configs) do
-        vim.lsp.start(c)
-        print("starting '"..c.name.."'")
-    end
-end, {
-    nargs='*',
-    desc='Start the lsp-server(s) attached to the current buffer.'
-})
-
-vim.api.nvim_create_user_command("LspEnable", function(_)
-    for _, lsp_name in pairs(my_lsps) do
-        vim.lsp.enable(lsp_name, true)
-    end
-end, {
-    nargs='*',
-    desc='Enable all the configured lsp-servers.'
-})
-
-vim.api.nvim_create_user_command("LspDisable", function(_)
-    for _, lsp_name in pairs(my_lsps) do
-        vim.lsp.enable(lsp_name, false)
-    end
-end, {
-    nargs='*',
-    desc='Disable all the configured lsp-servers'
-})
-
-vim.api.nvim_create_user_command("PrintLspNames", function(_)
-    local clients = vim.lsp.get_clients({bufnr = vim.api.nvim_get_current_buf()})
-    if #clients == 0 then
-        print("no clients")
-    end
-    for _, c in ipairs(clients) do
-        print(c.name)
-        -- local c_config = vim.lsp.config[c.name]
-        -- if c_config ~= nil then
-        --     vim.lsp.start(c_config)
-        --     print("starting '"..c.name.."'")
-        -- else
-        --     print("could not find config for "..c.name)
-        -- end
-    end
-end, {
-    nargs='*',
-    complete='shellcmd',
-    desc='Start the lsp-server(s) attached to the current buffer.'
-})
 
 vim.api.nvim_create_user_command('TreesitterStop', function()
     vim.treesitter.stop()
